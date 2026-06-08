@@ -1,0 +1,53 @@
+{
+  "geometry": {
+    "r_inner": 0.06,
+    "r_outer": 0.164,
+    "thickness": 0.032,
+    "solid_fraction": 0.35,
+    "n_radial": 12,
+    "n_theta": 96
+  },
+  "material": {
+    "rho": 1800.0,
+    "cp": 1400.0,
+    "k_inplane": 30.0,
+    "emissivity": 0.85
+  },
+  "cooling": {
+    "ambient_c": 25.0,
+    "h0": 80.0,
+    "h1": 1.5,
+    "alpha": 0.8,
+    "h_scale": 1.0,
+    "cooling_area_factor": 2.0,
+    "include_edge_cooling": true
+  },
+  "source": {
+    "eta_heat": 0.55,
+    "r_pad": 0.125,
+    "sigma_r": 0.032,
+    "sigma_theta": 0.5,
+    "theta0": 0.0,
+    "time_average_samples": 12
+  },
+  "solver": {
+    "initial_temperature": "data_front",
+    "sample_stride": 1,
+    "cg_tol": 1.0e-6,
+    "cg_max_iter": 100,
+    "snapshot_count": 8,
+    "animation_frames": 48
+  },
+  "calibration": {
+    "mesh": {
+      "n_radial": 6,
+      "n_theta": 48
+    },
+    "sample_stride": 6,
+    "eta_factors": [1.5, 2.2, 3.0, 3.6, 4.4],
+    "h_factors": [0.02, 0.05, 0.1, 0.2, 0.45],
+    "local_eta_factors": [0.85, 1.0, 1.15],
+    "local_h_factors": [0.7, 1.0, 1.4],
+    "prior_weight": 0.002
+  }
+}
