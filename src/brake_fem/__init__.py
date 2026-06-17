@@ -8,5 +8,6 @@ __all__ = [
     "solver",
     "source",
     "telemetry",
+    "thermoelastic",
     "visualize",
 ]

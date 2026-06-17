@@ -37,12 +37,14 @@ def main(argv: list[str] | None = None) -> int:
     p_sim.add_argument("--out", type=Path, required=True)
     p_sim.add_argument("--stride", type=int, default=None, help="Override telemetry sample stride.")
     p_sim.add_argument("--no-gif", action="store_true", help="Skip GIF generation.")
+    p_sim.add_argument("--no-stress", action="store_true", help="Skip thermoelastic stress post-processing.")
 
     p_cal = sub.add_parser("calibrate", help="Fit eta_heat and h_scale against front brake GT.")
     p_cal.add_argument("--data", type=Path, default=DEFAULT_DATA)
     p_cal.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p_cal.add_argument("--out", type=Path, required=True)
     p_cal.add_argument("--no-gif", action="store_true", help="Skip GIF generation for final calibrated run.")
+    p_cal.add_argument("--no-stress", action="store_true", help="Skip thermoelastic stress post-processing for final run.")
 
     sub.add_parser("test", help="Run unittest suite.")
 
@@ -78,6 +80,8 @@ def cmd_simulate(args: argparse.Namespace) -> int:
         overrides["solver"]["sample_stride"] = int(args.stride)
     if args.no_gif:
         overrides["solver"]["animation_frames"] = 0
+    if args.no_stress:
+        overrides["thermoelastic"] = {"enabled": False}
     cfg = with_overrides(cfg, overrides)
     result = run_simulation(df, cfg, store_snapshots=True)
     summary = write_simulation_outputs(result, df, validation, args.out, make_gif=not args.no_gif)
@@ -91,6 +95,8 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     if args.no_gif:
         cfg = with_overrides(cfg, {"solver": {"animation_frames": 0}})
+    if args.no_stress:
+        cfg = with_overrides(cfg, {"thermoelastic": {"enabled": False}})
 
     args.out.mkdir(parents=True, exist_ok=True)
     calibration = calibrate_parameters(df, cfg)

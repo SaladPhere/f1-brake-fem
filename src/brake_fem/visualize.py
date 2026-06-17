@@ -11,6 +11,7 @@ from .config import save_json
 from .mesh import AnnulusMesh
 from .solver import SimulationResult
 from .telemetry import TelemetryValidation, front_brake_power_per_disc
+from .thermoelastic import ThermoelasticResult, solve_thermoelastic_snapshots
 
 
 RGB = tuple[int, int, int]
@@ -48,13 +49,19 @@ def write_simulation_outputs(
     save_telemetry_plot(telemetry_df, out / "fig_telemetry.png")
     save_fit_plot(result, out / "fig_fit.png")
     save_temperature_fields(result, out / "fig_temperature_fields.png")
+
+    stress_result = solve_thermoelastic_snapshots(result)
+    if stress_result is not None:
+        write_thermoelastic_outputs(stress_result, result, out)
+
     if make_gif and len(result.snapshots):
         save_temperature_animation(result, out / "temperature_animation.gif")
 
     summary = simulation_summary(result, validation)
+    if stress_result is not None:
+        summary["thermoelastic"] = thermoelastic_summary(stress_result)
     save_json(summary, out / "summary.json")
     return summary
-
 
 def result_timeseries(result: SimulationResult) -> pd.DataFrame:
     data = {
@@ -106,6 +113,45 @@ def simulation_summary(result: SimulationResult, validation: TelemetryValidation
         },
     }
 
+
+def thermoelastic_summary(stress: ThermoelasticResult) -> dict[str, object]:
+    return {
+        "reference_temperature_c": stress.reference_temperature_c,
+        "max_von_mises_mpa": float(np.max(stress.max_von_mises_pa) / 1.0e6),
+        "mean_von_mises_mpa_max": float(np.max(stress.mean_von_mises_pa) / 1.0e6),
+        "max_displacement_mm": float(np.max(stress.max_displacement_m) * 1000.0),
+        "max_cg_iterations": int(np.max(stress.solver_iterations)) if len(stress.solver_iterations) else 0,
+        "max_cg_relative_residual": float(np.max(stress.solver_residuals)) if len(stress.solver_residuals) else 0.0,
+        "model": stress.config.get("thermoelastic", {}).get("model", "plane_stress"),
+    }
+
+
+def write_thermoelastic_outputs(stress: ThermoelasticResult, result: SimulationResult, out: Path) -> None:
+    stress_timeseries(stress).to_csv(out / "stress_timeseries.csv", index=False)
+    np.savez_compressed(
+        out / "stress_snapshots.npz",
+        times=stress.times,
+        displacements=stress.displacements,
+        nodal_von_mises=stress.nodal_von_mises,
+        element_von_mises=stress.element_von_mises,
+        nodes=result.mesh.nodes,
+        elements=result.mesh.elements,
+    )
+    save_stress_plot(stress, out / "fig_stress_timeseries.png")
+    save_stress_fields(result.mesh, stress, out / "fig_stress_fields.png")
+
+
+def stress_timeseries(stress: ThermoelasticResult) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "lap_s": stress.times,
+            "max_von_mises_MPa": stress.max_von_mises_pa / 1.0e6,
+            "mean_von_mises_MPa": stress.mean_von_mises_pa / 1.0e6,
+            "max_displacement_mm": stress.max_displacement_m * 1000.0,
+            "cg_iterations": stress.solver_iterations,
+            "cg_relative_residual": stress.solver_residuals,
+        }
+    )
 
 def save_telemetry_plot(df: pd.DataFrame, path: str | Path) -> None:
     t = df["lap_s"].to_numpy(float)
@@ -196,6 +242,11 @@ def save_temperature_fields(result: SimulationResult, path: str | Path, max_pane
 def save_temperature_animation(result: SimulationResult, path: str | Path) -> None:
     if len(result.snapshots) == 0:
         return
+    vis_cfg = result.config.get("visualization", {})
+    canvas = int(vis_cfg.get("animation_canvas_px", 560))
+    field_size = int(vis_cfg.get("animation_field_px", canvas - 72))
+    field_size = max(256, min(field_size, canvas - 24))
+    top_margin = 56
     vmin = float(np.min(result.snapshots))
     vmax = float(np.max(result.snapshots))
     frames = []
@@ -205,16 +256,15 @@ def save_temperature_animation(result: SimulationResult, path: str | Path) -> No
         _interp_at(result.times, result.t_mean, result.snapshots_t),
         _interp_at(result.times, result.t_max, result.snapshots_t),
     ):
-        img = Image.new("RGB", (420, 470), WHITE)
-        field = field_image(result.mesh, temp, 400, vmin, vmax)
-        img.paste(field, (10, 48))
+        img = Image.new("RGB", (canvas, field_size + top_margin + 14), WHITE)
+        field = field_image(result.mesh, temp, field_size, vmin, vmax)
+        img.paste(field, ((canvas - field_size) // 2, top_margin))
         draw = ImageDraw.Draw(img)
         font = _font()
         draw.text((14, 12), f"Brake-disc FEM temperature, t={time_s:5.1f}s", fill=BLACK, font=font)
         draw.text((14, 30), f"mean={mean_t:7.1f} C   max={max_t:7.1f} C", fill=BLACK, font=font)
         frames.append(img)
     frames[0].save(path, save_all=True, append_images=frames[1:], duration=80, loop=0)
-
 
 def draw_line_panels(
     path: str | Path,
@@ -265,12 +315,7 @@ def field_image(mesh: AnnulusMesh, temp: np.ndarray, size: int, vmin: float, vma
     theta = np.mod(np.arctan2(yy, xx), 2.0 * np.pi)
     mask = (rr >= mesh.radii[0]) & (rr <= mesh.radii[-1])
 
-    radial_pos = (rr - mesh.radii[0]) / (mesh.radii[-1] - mesh.radii[0])
-    radial_idx = np.clip(np.rint(radial_pos * mesh.n_radial).astype(int), 0, mesh.n_radial)
-    theta_idx = np.mod(np.rint(theta / (2.0 * np.pi) * mesh.n_theta).astype(int), mesh.n_theta)
-    node_idx = radial_idx * mesh.n_theta + theta_idx
-
-    values = temp[node_idx]
+    values = polar_bilinear_values(mesh, temp, rr, theta)
     arr = np.full((size, size, 3), 248, dtype=np.uint8)
     colors = colormap_array(values, vmin, vmax)
     arr[mask] = colors[mask]
@@ -284,6 +329,68 @@ def field_image(mesh: AnnulusMesh, temp: np.ndarray, size: int, vmin: float, vma
         draw.ellipse(box, outline=(40, 44, 48), width=2)
     return img
 
+
+def polar_bilinear_values(mesh: AnnulusMesh, values: np.ndarray, rr: np.ndarray, theta: np.ndarray) -> np.ndarray:
+    radial = np.clip((rr - mesh.radii[0]) / (mesh.radii[-1] - mesh.radii[0]) * mesh.n_radial, 0.0, mesh.n_radial)
+    r0 = np.floor(radial).astype(int)
+    r1 = np.clip(r0 + 1, 0, mesh.n_radial)
+    wr = radial - r0
+    r0 = np.clip(r0, 0, mesh.n_radial)
+
+    angular = np.mod(theta, 2.0 * np.pi) / (2.0 * np.pi) * mesh.n_theta
+    t0 = np.floor(angular).astype(int) % mesh.n_theta
+    t1 = (t0 + 1) % mesh.n_theta
+    wt = angular - np.floor(angular)
+
+    v00 = values[r0 * mesh.n_theta + t0]
+    v10 = values[r1 * mesh.n_theta + t0]
+    v01 = values[r0 * mesh.n_theta + t1]
+    v11 = values[r1 * mesh.n_theta + t1]
+    v0 = (1.0 - wr) * v00 + wr * v10
+    v1 = (1.0 - wr) * v01 + wr * v11
+    return (1.0 - wt) * v0 + wt * v1
+
+
+def save_stress_plot(stress: ThermoelasticResult, path: str | Path) -> None:
+    panels = [
+        {
+            "title": "Thermal stress from temperature snapshots",
+            "series": [
+                ("max von Mises MPa", stress.max_von_mises_pa / 1.0e6, RED),
+                ("mean von Mises MPa", stress.mean_von_mises_pa / 1.0e6, BLUE),
+            ],
+        },
+        {
+            "title": "Thermoelastic displacement",
+            "series": [("max displacement mm", stress.max_displacement_m * 1000.0, GREEN)],
+        },
+    ]
+    draw_line_panels(path, "Thermoelastic summary", stress.times, panels, height=620)
+
+
+def save_stress_fields(mesh: AnnulusMesh, stress: ThermoelasticResult, path: str | Path, max_panels: int = 8) -> None:
+    if len(stress.nodal_von_mises) == 0:
+        return
+    ids = np.unique(np.linspace(0, len(stress.nodal_von_mises) - 1, min(max_panels, len(stress.nodal_von_mises)), dtype=int))
+    fields = stress.nodal_von_mises[ids] / 1.0e6
+    times = stress.times[ids]
+    vmin = 0.0
+    vmax = float(np.max(stress.nodal_von_mises) / 1.0e6)
+    panel_size = 250
+    title_h = 32
+    cols = min(4, len(ids))
+    rows = int(np.ceil(len(ids) / cols))
+    fig = Image.new("RGB", (cols * panel_size, rows * (panel_size + title_h)), WHITE)
+    draw = ImageDraw.Draw(fig)
+    font = _font()
+    for n, (field_values, time_s) in enumerate(zip(fields, times)):
+        field = field_image(mesh, field_values, panel_size, vmin, vmax)
+        x = (n % cols) * panel_size
+        y = (n // cols) * (panel_size + title_h)
+        draw.text((x + 8, y + 8), f"t={time_s:5.1f}s", fill=BLACK, font=font)
+        fig.paste(field, (x, y + title_h))
+    _draw_colorbar(fig, vmin, vmax, unit="MPa")
+    fig.save(path)
 
 def colormap_array(values: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
     span = max(1.0e-9, vmax - vmin)
@@ -379,7 +486,7 @@ def _draw_legend(
         draw.text((x + 28, yy), str(label), fill=BLACK, font=font)
 
 
-def _draw_colorbar(img: Image.Image, vmin: float, vmax: float) -> None:
+def _draw_colorbar(img: Image.Image, vmin: float, vmax: float, unit: str = "C") -> None:
     draw = ImageDraw.Draw(img)
     font = _font()
     width, height = img.size
@@ -390,8 +497,8 @@ def _draw_colorbar(img: Image.Image, vmin: float, vmax: float) -> None:
     colors = colormap_array(gradient.reshape(1, -1), vmin, vmax)[0]
     for i, color in enumerate(colors):
         draw.line([x0 + i, y0, x0 + i, y0 + 10], fill=tuple(int(c) for c in color))
-    draw.text((x0, y0 - 14), f"{vmin:.1f} C", fill=BLACK, font=font)
-    draw.text((x0 + bar_w - 62, y0 - 14), f"{vmax:.1f} C", fill=BLACK, font=font)
+    draw.text((x0, y0 - 14), f"{vmin:.1f} {unit}", fill=BLACK, font=font)
+    draw.text((x0 + bar_w - 68, y0 - 14), f"{vmax:.1f} {unit}", fill=BLACK, font=font)
 
 
 def _range(values: np.ndarray) -> tuple[float, float]:

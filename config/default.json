@@ -1,11 +1,11 @@
 {
   "geometry": {
-    "r_inner": 0.06,
+    "r_inner": 0.085,
     "r_outer": 0.164,
     "thickness": 0.032,
     "solid_fraction": 0.35,
-    "n_radial": 12,
-    "n_theta": 96
+    "n_radial": 18,
+    "n_theta": 160
   },
   "material": {
     "rho": 1800.0,
@@ -25,8 +25,8 @@
   "source": {
     "eta_heat": 0.55,
     "r_pad": 0.125,
-    "sigma_r": 0.032,
-    "sigma_theta": 0.5,
+    "sigma_r": 0.024,
+    "sigma_theta": 0.42,
     "theta0": 0.0,
     "time_average_samples": 12
   },
@@ -34,14 +34,31 @@
     "initial_temperature": "data_front",
     "sample_stride": 1,
     "cg_tol": 1.0e-6,
-    "cg_max_iter": 100,
+    "cg_max_iter": 140,
     "snapshot_count": 8,
     "animation_frames": 48
   },
+  "thermoelastic": {
+    "enabled": true,
+    "model": "plane_stress",
+    "reference_temperature": "initial_mean",
+    "use_solid_fraction": true,
+    "cg_tol": 1.0e-8,
+    "cg_max_iter": 900,
+    "material": {
+      "young_modulus_pa": 30000000000.0,
+      "poisson_ratio": 0.22,
+      "thermal_expansion": 0.000002
+    }
+  },
+  "visualization": {
+    "animation_canvas_px": 560,
+    "animation_field_px": 512
+  },
   "calibration": {
     "mesh": {
-      "n_radial": 6,
-      "n_theta": 48
+      "n_radial": 8,
+      "n_theta": 64
     },
     "sample_stride": 6,
     "eta_factors": [1.5, 2.2, 3.0, 3.6, 4.4],
